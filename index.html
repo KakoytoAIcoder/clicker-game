@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Кликер</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: var(--tg-theme-bg-color, #1a1c2b);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: var(--tg-theme-text-color, #eef0f8);
+    overscroll-behavior: none;
+    user-select: none;
+  }
+  #wrap {
+    max-width: 480px; margin: 0 auto; padding: 16px;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 20px; margin: 4px 0 2px;
+    color: var(--tg-theme-link-color, #b9a7ff);
+  }
+  #score {
+    font-size: 44px; font-weight: 800; margin: 6px 0 2px;
+    color: #ffd166;
+  }
+  #rate {
+    font-size: 13px; margin-bottom: 18px;
+    color: var(--tg-theme-hint-color, #9aa0c0);
+  }
+  #coinBtn {
+    width: 170px; height: 170px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #ffe08a, #ffb703 70%);
+    border: none;
+    box-shadow: 0 8px 0 #c98a02, 0 14px 24px rgba(0,0,0,0.4);
+    font-size: 60px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: transform 0.06s ease, box-shadow 0.06s ease;
+  }
+  #coinBtn:active {
+    transform: translateY(6px);
+    box-shadow: 0 2px 0 #c98a02, 0 6px 12px rgba(0,0,0,0.4);
+  }
+  .pop {
+    position: absolute; pointer-events: none;
+    font-weight: 700; color: #ffd166; font-size: 18px;
+    animation: floatUp 0.7s ease-out forwards;
+  }
+  @keyframes floatUp {
+    from { opacity: 1; transform: translateY(0); }
+    to { opacity: 0; transform: translateY(-60px); }
+  }
+  #stage { position: relative; margin: 18px 0 22px; }
+  #shopTitle {
+    align-self: flex-start; font-size: 15px; margin: 10px 0 8px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--tg-theme-hint-color, #9aa0c0);
+  }
+  .shop { width: 100%; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; }
+  .item {
+    background: var(--tg-theme-secondary-bg-color, #262a42);
+    border-radius: 12px; padding: 12px 14px;
+    display: flex; align-items: center; justify-content: space-between;
+    border: 1px solid rgba(128,128,128,0.15);
+  }
+  .item.disabled { opacity: 0.45; }
+  .item .info { display: flex; flex-direction: column; gap: 2px; }
+  .item .name { font-weight: 700; font-size: 15px; }
+  .item .desc { font-size: 12px; color: var(--tg-theme-hint-color, #9aa0c0); }
+  .item .buy {
+    background: var(--tg-theme-button-color, #6c5ce7);
+    color: var(--tg-theme-button-text-color, #fff);
+    border: none; border-radius: 8px;
+    padding: 10px 14px; font-weight: 700; font-size: 14px; cursor: pointer;
+    min-width: 84px;
+  }
+  .item .buy:active { transform: scale(0.96); }
+  #resetBtn {
+    margin-top: 6px; background: none; border: 1px solid rgba(128,128,128,0.3);
+    color: var(--tg-theme-hint-color, #7d84ab); padding: 8px 16px; border-radius: 8px;
+    font-size: 12px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>💰 Кликер</h1>
+  <div id="score">0</div>
+  <div id="rate">+0 в секунду</div>
+  <div id="stage">
+    <button id="coinBtn">🪙</button>
+  </div>
+
+  <div id="shopTitle">Улучшения</div>
+  <div class="shop" id="shop"></div>
+
+  <button id="resetBtn">Сбросить прогресс</button>
+</div>
+
+<script>
+(function(){
+  // --- Telegram integration ---
+  const tg = window.Telegram ? window.Telegram.WebApp : null;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    // подстраиваем цвет шапки под тему Telegram
+    try { tg.setHeaderColor(tg.themeParams.bg_color || '#1a1c2b'); } catch(e){}
+    try { tg.setBackgroundColor(tg.themeParams.bg_color || '#1a1c2b'); } catch(e){}
+  }
+  function haptic(style){
+    if (tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.impactOccurred(style || 'light'); } catch(e){}
+    }
+  }
+  function hapticNotify(type){
+    if (tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.notificationOccurred(type); } catch(e){}
+    }
+  }
+
+  const scoreEl = document.getElementById('score');
+  const rateEl = document.getElementById('rate');
+  const coinBtn = document.getElementById('coinBtn');
+  const stage = document.getElementById('stage');
+  const shopEl = document.getElementById('shop');
+  const resetBtn = document.getElementById('resetBtn');
+
+  // Сохраняем прогресс через CloudStorage Telegram, если доступен, иначе через localStorage
+  const SAVE_KEY = 'clicker_save_v1';
+
+  const itemDefs = [
+    { id: 'finger', name: 'Ловкий палец', desc: '+1 к клику', baseCost: 15, costMul: 1.15, click: 1, cps: 0 },
+    { id: 'intern', name: 'Стажёр', desc: '+1 монета/сек', baseCost: 50, costMul: 1.15, click: 0, cps: 1 },
+    { id: 'machine', name: 'Автомат', desc: '+5 монет/сек', baseCost: 250, costMul: 1.15, click: 0, cps: 5 },
+    { id: 'factory', name: 'Фабрика', desc: '+25 монет/сек', baseCost: 1500, costMul: 1.15, click: 0, cps: 25 },
+    { id: 'clickPower', name: 'Золотой палец', desc: '+5 к клику', baseCost: 800, costMul: 1.15, click: 5, cps: 0 },
+    { id: 'bank', name: 'Банк', desc: '+120 монет/сек', baseCost: 8000, costMul: 1.15, click: 0, cps: 120 },
+  ];
+
+  let state = { coins: 0, perClick: 1, perSecond: 0, owned: {} };
+
+  function localLoad(){
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch(e){ return null; }
+  }
+  function localSave(){
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch(e){}
+  }
+
+  function loadState(cb){
+    if (tg && tg.CloudStorage) {
+      tg.CloudStorage.getItem(SAVE_KEY, (err, value) => {
+        if (!err && value) {
+          try { state = JSON.parse(value); } catch(e){}
+        } else {
+          const local = localLoad();
+          if (local) state = local;
+        }
+        cb();
+      });
+    } else {
+      const local = localLoad();
+      if (local) state = local;
+      cb();
+    }
+  }
+
+  function saveState(){
+    localSave();
+    if (tg && tg.CloudStorage) {
+      try { tg.CloudStorage.setItem(SAVE_KEY, JSON.stringify(state)); } catch(e){}
+    }
+  }
+
+  function costFor(def){
+    const owned = state.owned[def.id] || 0;
+    return Math.ceil(def.baseCost * Math.pow(def.costMul, owned));
+  }
+
+  function fmt(n){
+    if (n < 1000) return Math.floor(n).toString();
+    const units = ['K','M','B','T'];
+    let u = -1;
+    let num = n;
+    while (num >= 1000 && u < units.length-1){ num /= 1000; u++; }
+    return num.toFixed(num < 10 ? 2 : 1) + units[u];
+  }
+
+  function render(){
+    scoreEl.textContent = fmt(state.coins);
+    rateEl.textContent = '+' + fmt(state.perSecond) + ' в секунду · клик +' + fmt(state.perClick);
+    shopEl.innerHTML = '';
+    itemDefs.forEach(def => {
+      const cost = costFor(def);
+      const owned = state.owned[def.id] || 0;
+      const div = document.createElement('div');
+      div.className = 'item' + (state.coins < cost ? ' disabled' : '');
+      div.innerHTML = `
+        <div class="info">
+          <div class="name">${def.name} ${owned ? '('+owned+')' : ''}</div>
+          <div class="desc">${def.desc}</div>
+        </div>
+        <button class="buy">${fmt(cost)} 🪙</button>
+      `;
+      div.querySelector('.buy').addEventListener('click', () => buy(def));
+      shopEl.appendChild(div);
+    });
+  }
+
+  function buy(def){
+    const cost = costFor(def);
+    if (state.coins < cost) return;
+    state.coins -= cost;
+    state.owned[def.id] = (state.owned[def.id] || 0) + 1;
+    state.perClick += def.click;
+    state.perSecond += def.cps;
+    hapticNotify('success');
+    saveState();
+    render();
+  }
+
+  function popText(x, y, text){
+    const el = document.createElement('div');
+    el.className = 'pop';
+    el.textContent = text;
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    stage.appendChild(el);
+    setTimeout(() => el.remove(), 700);
+  }
+
+  coinBtn.addEventListener('click', (e) => {
+    state.coins += state.perClick;
+    const rect = coinBtn.getBoundingClientRect();
+    const stageRect = stage.getBoundingClientRect();
+    const x = (e.clientX || rect.left + rect.width/2) - stageRect.left;
+    const y = (e.clientY || rect.top) - stageRect.top;
+    popText(x, y, '+' + fmt(state.perClick));
+    haptic('light');
+    render();
+    saveState();
+  });
+
+  resetBtn.addEventListener('click', () => {
+    const doReset = () => {
+      state = { coins: 0, perClick: 1, perSecond: 0, owned: {} };
+      saveState();
+      render();
+    };
+    if (tg && tg.showConfirm) {
+      tg.showConfirm('Точно сбросить весь прогресс?', (ok) => { if (ok) doReset(); });
+    } else {
+      if (confirm('Точно сбросить весь прогресс?')) doReset();
+    }
+  });
+
+  setInterval(() => {
+    if (state.perSecond > 0){
+      state.coins += state.perSecond / 10;
+      render();
+    }
+  }, 100);
+
+  setInterval(saveState, 3000);
+
+  loadState(() => {
+    render();
+  });
+})();
+</script>
+</body>
+</html>
