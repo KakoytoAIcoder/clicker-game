@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Побег стрелок</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--tg-theme-bg-color, #f4f6fa);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #222633;
+    overscroll-behavior: none;
+    user-select: none;
+    overflow: hidden;
+  }
+  #app {
+    height: 100%;
+    height: 100dvh;
+    max-width: 460px; margin: 0 auto;
+    display: flex; flex-direction: column;
+    padding: 0 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+  #topbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0;
+    flex-shrink: 0;
+  }
+  #backBtn {
+    display: flex; align-items: center; gap: 6px;
+    background: #fff; color: #2f6bff;
+    border: 1px solid #d7dee8;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 14px; font-weight: 700;
+    text-decoration: none;
+    flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(20,30,60,0.08);
+  }
+  #backBtn:active { transform: scale(0.95); }
+  #scores { display: flex; gap: 8px; margin-left: auto; }
+  .scorebox {
+    background: #fff; border: 1px solid #e3e8f0; border-radius: 8px;
+    padding: 5px 10px; text-align: center; min-width: 54px;
+  }
+  .scorebox .label { font-size: 10px; text-transform: uppercase; color: #8b93a7; }
+  .scorebox .val { font-size: 15px; font-weight: 700; color: #ff9f0a; }
+  #mid {
+    flex: 1; min-height: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #boardHolder {
+    background: #ffffff; border-radius: 14px;
+    box-shadow: 0 8px 24px rgba(20,30,60,0.12), inset 0 0 0 1px #e7ebf2;
+    position: relative;
+    overflow: hidden;
+  }
+  svg { display: block; }
+  .hitpath { fill: none; stroke: transparent; cursor: pointer; }
+  .visiblepath { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .piece.shake { animation: shake 0.3s ease; }
+  @keyframes shake {
+    0%,100% { transform: translateX(0); }
+    25% { transform: translateX(-5px); }
+    75% { transform: translateX(5px); }
+  }
+  .piece {
+    transition: transform 0.24s ease, opacity 0.24s ease;
+  }
+  #overlay {
+    position: absolute; inset: 0; border-radius: 14px;
+    background: rgba(255,255,255,0.96);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px;
+  }
+  #overlay h1 { margin: 0 0 6px; font-size: 22px; color: #222633; }
+  #overlay p { margin: 0 0 18px; color: #7a8194; font-size: 13px; max-width: 280px; }
+  #startBtn {
+    background: #2f6bff; color: #fff; border: none;
+    padding: 12px 30px; border-radius: 999px; font-size: 16px; font-weight: 700;
+    cursor: pointer;
+  }
+  #startBtn:active { transform: scale(0.96); }
+  .hidden { display: none !important; }
+  #restartBtn {
+    background: #fff; border: 1px solid #d7dee8;
+    color: #5b6376; padding: 7px 14px; border-radius: 8px;
+    font-size: 12px; cursor: pointer; flex-shrink: 0; margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <a id="backBtn" href="index.html">← Меню</a>
+    <div id="scores">
+      <div class="scorebox"><div class="label">Уровень</div><div class="val" id="level">1</div></div>
+      <div class="scorebox"><div class="label">Осталось</div><div class="val" id="left">0</div></div>
+      <div class="scorebox"><div class="label">Рекорд</div><div class="val" id="best">0</div></div>
+    </div>
+  </div>
+  <div id="mid">
+    <div id="boardHolder">
+      <svg id="svg"></svg>
+      <div id="overlay">
+        <h1 id="overlayTitle">Побег стрелок</h1>
+        <p id="overlaySub">Нажимай на наконечник линии — она уедет туда, куда указывает, если путь свободен. Очисти всё поле.</p>
+        <button id="startBtn">Начать</button>
+      </div>
+    </div>
+  </div>
+  <button id="restartBtn">Начать уровень заново</button>
+</div>
+
+<script>
+(function(){
+  const tg = window.Telegram ? window.Telegram.WebApp : null;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try { tg.disableVerticalSwipes(); } catch(e){}
+    try { tg.setHeaderColor(tg.themeParams.bg_color || '#f4f6fa'); } catch(e){}
+  }
+  function haptic(style){
+    if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.impactOccurred(style || 'light'); } catch(e){} }
+  }
+  function hapticNotify(type){
+    if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred(type); } catch(e){} }
+  }
+
+  const COLS = 8, ROWS = 10;
+  const DIRS = {
+    up:    {dx:0,  dy:-1},
+    right: {dx:1,  dy:0},
+    down:  {dx:0,  dy:1},
+    left:  {dx:-1, dy:0}
+  };
+  const DIR_KEYS = Object.keys(DIRS);
+  const PALETTE = ['#2f6bff','#ff9f0a','#34c759','#ff453a','#af52de','#00c2d1','#ff6482'];
+
+  const svg = document.getElementById('svg');
+  const boardHolder = document.getElementById('boardHolder');
+  const mid = document.getElementById('mid');
+  const levelEl = document.getElementById('level');
+  const leftEl = document.getElementById('left');
+  const bestEl = document.getElementById('best');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlaySub = document.getElementById('overlaySub');
+  const startBtn = document.getElementById('startBtn');
+  const restartBtn = document.getElementById('restartBtn');
+
+  let grid, pieces, level, best, running, cellSize, pieceEls;
+
+  best = parseInt(localStorage.getItem('arrows_best') || '1', 10);
+  bestEl.textContent = best;
+
+  function emptyGrid(){
+    return Array.from({length:ROWS}, () => Array(COLS).fill(null));
+  }
+
+  function paramsForLevel(lv){
+    const count = Math.min(12 + lv * 3, 42);
+    const maxLen = Math.min(3 + Math.floor(lv/3), 6);
+    return { count, maxLen };
+  }
+
+  function isPathClear(g, x, y, dirKey){
+    const {dx,dy} = DIRS[dirKey];
+    let cx = x+dx, cy = y+dy;
+    while (cx>=0 && cx<COLS && cy>=0 && cy<ROWS){
+      if (g[cy][cx]) return false;
+      cx += dx; cy += dy;
+    }
+    return true;
+  }
+
+  function shuffled(arr){
+    const a = arr.slice();
+    for (let i=a.length-1;i>0;i--){
+      const j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]] = [a[j],a[i]];
+    }
+    return a;
+  }
+
+  function tryBuildPiece(g, maxLen){
+    // find random empty start
+    const emptyCells = [];
+    for (let y=0;y<ROWS;y++) for (let x=0;x<COLS;x++) if (!g[y][x]) emptyCells.push({x,y});
+    if (!emptyCells.length) return null;
+
+    for (let tries=0; tries<25; tries++){
+      const start = emptyCells[Math.floor(Math.random()*emptyCells.length)];
+      const path = [{x:start.x, y:start.y}];
+      const used = new Set([start.x+'_'+start.y]);
+      const targetLen = 1 + Math.floor(Math.random()*maxLen);
+      for (let i=1; i<targetLen; i++){
+        const cur = path[path.length-1];
+        let moved = false;
+        for (const dk of shuffled(DIR_KEYS)){
+          const {dx,dy} = DIRS[dk];
+          const nx = cur.x+dx, ny = cur.y+dy;
+          if (nx<0||nx>=COLS||ny<0||ny>=ROWS) continue;
+          if (g[ny][nx]) continue;
+          const key = nx+'_'+ny;
+          if (used.has(key)) continue;
+          path.push({x:nx,y:ny});
+          used.add(key);
+          moved = true;
+          break;
+        }
+        if (!moved) break;
+      }
+
+      let dirKey;
+      if (path.length >= 2){
+        const a = path[path.length-2], b = path[path.length-1];
+        dirKey = Object.keys(DIRS).find(k => DIRS[k].dx === (b.x-a.x) && DIRS[k].dy === (b.y-a.y));
+      } else {
+        dirKey = DIR_KEYS[Math.floor(Math.random()*4)];
+      }
+
+      // temporarily mark path (except tip) to test clearance
+      for (let i=0;i<path.length-1;i++) g[path[i].y][path[i].x] = 'TEMP';
+      const tip = path[path.length-1];
+      const clear = isPathClear(g, tip.x, tip.y, dirKey);
+      for (let i=0;i<path.length-1;i++) g[path[i].y][path[i].x] = null;
+
+      if (clear) {
+        return { path, dir: dirKey };
+      }
+    }
+    return null;
+  }
+
+  function generateLevel(lv){
+    const { count, maxLen } = paramsForLevel(lv);
+    const g = emptyGrid();
+    const ps = {};
+    let nextId = 1;
+    let attempts = 0;
+    const maxAttempts = count * 40;
+    while (Object.keys(ps).length < count && attempts < maxAttempts){
+      attempts++;
+      const built = tryBuildPiece(g, maxLen);
+      if (!built) continue;
+      const id = 'p' + (nextId++);
+      const color = PALETTE[Math.floor(Math.random()*PALETTE.length)];
+      built.path.forEach(c => { g[c.y][c.x] = id; });
+      ps[id] = { cells: built.path, dir: built.dir, color };
+    }
+    return { grid: g, pieces: ps };
+  }
+
+  function fitBoardSize(){
+    const midRect = mid.getBoundingClientRect();
+    const maxCell = Math.min(
+      Math.floor((midRect.width - 4) / COLS),
+      Math.floor((midRect.height - 4) / ROWS)
+    );
+    cellSize = Math.max(maxCell, 18);
+    const w = cellSize * COLS, h = cellSize * ROWS;
+    boardHolder.style.width = w + 'px';
+    boardHolder.style.height = h + 'px';
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', h);
+    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+  }
+  window.addEventListener('resize', () => { fitBoardSize(); render(); });
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { fitBoardSize(); render(); });
+
+  function cellCenter(x,y){
+    return [ (x+0.5)*cellSize, (y+0.5)*cellSize ];
+  }
+
+  function buildPathD(cells){
+    return cells.map((c,i) => {
+      const [px,py] = cellCenter(c.x,c.y);
+      return (i===0 ? 'M' : 'L') + px.toFixed(1) + ',' + py.toFixed(1);
+    }).join(' ');
+  }
+
+  function render(){
+    svg.innerHTML = '';
+    pieceEls = {};
+      const strokeW = Math.max(cellSize*0.20, 5);
+    const arrowSize = Math.max(cellSize*0.24, 7);
+
+    Object.keys(pieces).forEach(id => {
+      const piece = pieces[id];
+      const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+      g.setAttribute('class','piece');
+
+      const tip = piece.cells[piece.cells.length-1];
+      const [tx,ty] = cellCenter(tip.x, tip.y);
+      const dv = DIRS[piece.dir];
+      const angle = Math.atan2(dv.dy, dv.dx) * 180/Math.PI;
+      const s = arrowSize;
+
+      const arrow = document.createElementNS('http://www.w3.org/2000/svg','polygon');
+      arrow.setAttribute('points', `${s*0.9},0 ${-s*0.5},${s*0.65} ${-s*0.5},${-s*0.65}`);
+      arrow.setAttribute('fill', piece.color);
+      arrow.setAttribute('transform', `translate(${tx},${ty}) rotate(${angle})`);
+
+      if (piece.cells.length >= 2) {
+        const d = buildPathD(piece.cells);
+
+        const hit = document.createElementNS('http://www.w3.org/2000/svg','path');
+        hit.setAttribute('d', d);
+        hit.setAttribute('class','hitpath');
+        hit.setAttribute('stroke-width', Math.max(cellSize*0.8, 20));
+
+        const visible = document.createElementNS('http://www.w3.org/2000/svg','path');
+        visible.setAttribute('d', d);
+        visible.setAttribute('class','visiblepath');
+        visible.setAttribute('stroke', piece.color);
+        visible.setAttribute('stroke-width', strokeW);
+
+        g.appendChild(visible);
+        g.appendChild(arrow);
+        g.appendChild(hit);
+        svg.appendChild(g);
+
+        piece.pathLength = visible.getTotalLength();
+        piece.visibleEl = visible;
+
+        hit.addEventListener('pointerdown', (e) => { e.preventDefault(); onTap(id, g); });
+      } else {
+        const hit = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        hit.setAttribute('cx', tx);
+        hit.setAttribute('cy', ty);
+        hit.setAttribute('r', Math.max(cellSize*0.45, 16));
+        hit.setAttribute('fill', 'transparent');
+        hit.style.cursor = 'pointer';
+
+        g.appendChild(arrow);
+        g.appendChild(hit);
+        svg.appendChild(g);
+
+        piece.pathLength = 0;
+        piece.visibleEl = null;
+
+        hit.addEventListener('pointerdown', (e) => { e.preventDefault(); onTap(id, g); });
+      }
+
+      pieceEls[id] = g;
+    });
+
+    leftEl.textContent = Object.keys(pieces).length;
+  }
+
+  function onTap(id, g){
+    if (!running) return;
+    const piece = pieces[id];
+    if (!piece) return;
+    const tip = piece.cells[piece.cells.length-1];
+    if (!isPathClear(grid, tip.x, tip.y, piece.dir)){
+      g.classList.remove('shake');
+      void g.getBBox();
+      g.classList.add('shake');
+      hapticNotify('error');
+      return;
+    }
+    const dv = DIRS[piece.dir];
+    const travel = (COLS + ROWS) * cellSize;
+    haptic('light');
+
+    if (piece.pathLength > 0 && piece.visibleEl) {
+      const len = piece.pathLength;
+      piece.visibleEl.style.strokeDasharray = len;
+      piece.visibleEl.style.strokeDashoffset = 0;
+      piece.visibleEl.style.transition = 'stroke-dashoffset 0.55s cubic-bezier(0.4, 0, 0.7, 1)';
+      requestAnimationFrame(() => {
+        piece.visibleEl.style.strokeDashoffset = len;
+      });
+      g.style.transition = 'transform 0.55s cubic-bezier(0.4, 0, 0.7, 1), opacity 0.3s ease 0.3s';
+    } else {
+      g.style.transition = 'transform 0.4s ease-in, opacity 0.4s ease-in';
+    }
+    g.style.transform = `translate(${dv.dx*travel}px, ${dv.dy*travel}px)`;
+    g.style.opacity = '0';
+
+    piece.cells.forEach(c => { grid[c.y][c.x] = null; });
+    delete pieces[id];
+
+    setTimeout(() => {
+      g.remove();
+      leftEl.textContent = Object.keys(pieces).length;
+      checkProgress();
+    }, 570);
+  }
+
+  function anyMoveAvailable(){
+    for (const id in pieces){
+      const p = pieces[id];
+      const tip = p.cells[p.cells.length-1];
+      if (isPathClear(grid, tip.x, tip.y, p.dir)) return true;
+    }
+    return false;
+  }
+
+  function checkProgress(){
+    const remaining = Object.keys(pieces).length;
+    if (remaining === 0){
+      level++;
+      if (level - 1 > best){
+        best = level - 1;
+        localStorage.setItem('arrows_best', best);
+        bestEl.textContent = best;
+      }
+      levelEl.textContent = level;
+      hapticNotify('success');
+      startLevel();
+      return;
+    }
+    if (!anyMoveAvailable()){
+      showDeadlock();
+    }
+  }
+
+  function showDeadlock(){
+    running = false;
+    overlayTitle.textContent = 'Тупик!';
+    overlaySub.textContent = 'Свободных ходов не осталось. Попробуй уровень ' + level + ' ещё раз.';
+    startBtn.textContent = 'Заново';
+    overlay.classList.remove('hidden');
+  }
+
+  function startLevel(){
+    fitBoardSize();
+    const built = generateLevel(level);
+    grid = built.grid;
+    pieces = built.pieces;
+    render();
+    running = true;
+    overlay.classList.add('hidden');
+  }
+
+  function startGame(){
+    level = 1;
+    levelEl.textContent = level;
+    startLevel();
+  }
+
+  startBtn.addEventListener('click', startGame);
+  restartBtn.addEventListener('click', () => {
+    if (!level) return;
+    startLevel();
+  });
+
+  grid = emptyGrid();
+  pieces = {};
+  fitBoardSize();
+  setTimeout(fitBoardSize, 100);
+})();
+</script>
+</body>
+</html>
