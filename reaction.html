@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Тест на реакцию</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--tg-theme-bg-color, #0f1720);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    color: #eef2f7;
+    overscroll-behavior: none;
+    user-select: none;
+    overflow: hidden;
+  }
+  #app {
+    height: 100%;
+    height: 100dvh;
+    max-width: 480px; margin: 0 auto;
+    display: flex; flex-direction: column;
+    padding: 0 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  #topbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 0;
+    flex-shrink: 0;
+  }
+  #backBtn {
+    display: flex; align-items: center; gap: 6px;
+    background: #17212e; color: #eef2f7;
+    border: 1px solid #263447;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 14px; font-weight: 600;
+    text-decoration: none;
+    flex-shrink: 0;
+  }
+  #backBtn:active { transform: scale(0.95); }
+  #hud {
+    flex: 1;
+    display: flex; justify-content: flex-end; gap: 14px;
+    font-size: 13px; color: #9fb0c3;
+  }
+  #hud b { color: #4ade80; font-size: 15px; }
+  #timerBar {
+    height: 6px; background: #263447; border-radius: 4px; overflow: hidden;
+    flex-shrink: 0;
+  }
+  #timerFill {
+    height: 100%; background: #4ade80; width: 100%;
+    transition: width 0.1s linear;
+  }
+  #arena {
+    position: relative; flex: 1; min-height: 0;
+    background: #17212e; border-radius: 16px; overflow: hidden;
+    box-shadow: inset 0 0 0 1px #263447;
+    margin-top: 10px;
+  }
+  .target {
+    position: absolute;
+    border-radius: 10px;
+    background: #4ade80;
+    box-shadow: 0 0 16px rgba(74,222,128,0.5);
+    border: none;
+  }
+  .target.bad {
+    background: #f87171;
+    box-shadow: 0 0 16px rgba(248,113,113,0.5);
+  }
+  #overlay {
+    position: absolute; inset: 0;
+    background: rgba(15,23,32,0.94);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 24px;
+  }
+  #overlay h1 { margin: 0 0 6px; font-size: 24px; }
+  #overlay p { margin: 0 0 18px; color: #9fb0c3; font-size: 13px; max-width: 280px; }
+  #startBtn {
+    background: #4ade80; color: #0b2015; border: none;
+    padding: 12px 30px; border-radius: 999px; font-size: 16px; font-weight: 700;
+    cursor: pointer;
+  }
+  #startBtn:active { transform: scale(0.96); }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <a id="backBtn" href="index.html">← Меню</a>
+    <div id="hud">
+      <div>Счёт: <b id="score">0</b></div>
+      <div>Время: <b id="time">30</b>с</div>
+      <div>Рекорд: <b id="best">0</b></div>
+    </div>
+  </div>
+  <div id="timerBar"><div id="timerFill"></div></div>
+  <div id="arena">
+    <div id="overlay">
+      <h1 id="overlayTitle">Тест на реакцию</h1>
+      <p id="overlaySub">Тапай по зелёным квадратам, избегай красных. 30 секунд на максимальный счёт.</p>
+      <button id="startBtn">Начать</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const tg = window.Telegram ? window.Telegram.WebApp : null;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try { tg.disableVerticalSwipes(); } catch(e){}
+    try { tg.setHeaderColor(tg.themeParams.bg_color || '#0f1720'); } catch(e){}
+  }
+
+  const arena = document.getElementById('arena');
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlayTitle');
+  const overlaySub = document.getElementById('overlaySub');
+  const startBtn = document.getElementById('startBtn');
+  const scoreEl = document.getElementById('score');
+  const timeEl = document.getElementById('time');
+  const bestEl = document.getElementById('best');
+  const timerFill = document.getElementById('timerFill');
+
+  const DURATION = 30;
+  let score, timeLeft, running, spawnTimeout, tickInterval, best;
+  let currentTargetTimeout = null;
+
+  best = parseInt(localStorage.getItem('reaction_best') || '0', 10);
+  bestEl.textContent = best;
+
+  function rand(min, max){ return Math.random() * (max - min) + min; }
+
+  function spawnTarget(){
+    if (!running) return;
+    const old = arena.querySelector('.target');
+    if (old) old.remove();
+
+    const isBad = Math.random() < 0.25;
+    const size = rand(44, 72);
+    const maxX = arena.clientWidth - size;
+    const maxY = arena.clientHeight - size;
+    const x = rand(0, Math.max(0,maxX));
+    const y = rand(0, Math.max(0,maxY));
+
+    const el = document.createElement('button');
+    el.className = 'target' + (isBad ? ' bad' : '');
+    el.style.width = size + 'px';
+    el.style.height = size + 'px';
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+
+    const lifespan = rand(650, 1100);
+
+    function hit(e){
+      e.preventDefault();
+      if (!running) return;
+      if (isBad){
+        score = Math.max(0, score - 5);
+      } else {
+        score += 1;
+      }
+      scoreEl.textContent = score;
+      el.remove();
+      clearTimeout(currentTargetTimeout);
+      scheduleNext();
+    }
+    el.addEventListener('pointerdown', hit);
+
+    arena.appendChild(el);
+
+    currentTargetTimeout = setTimeout(() => {
+      el.remove();
+      scheduleNext();
+    }, lifespan);
+  }
+
+  function scheduleNext(){
+    clearTimeout(spawnTimeout);
+    spawnTimeout = setTimeout(spawnTarget, rand(150, 400));
+  }
+
+  function startGame(){
+    score = 0;
+    timeLeft = DURATION;
+    scoreEl.textContent = score;
+    timeEl.textContent = timeLeft;
+    timerFill.style.width = '100%';
+    overlay.classList.add('hidden');
+    running = true;
+
+    scheduleNext();
+
+    tickInterval = setInterval(() => {
+      timeLeft -= 1;
+      timeEl.textContent = timeLeft;
+      timerFill.style.width = (timeLeft / DURATION * 100) + '%';
+      if (timeLeft <= 0){
+        endGame();
+      }
+    }, 1000);
+  }
+
+  function endGame(){
+    running = false;
+    clearInterval(tickInterval);
+    clearTimeout(spawnTimeout);
+    clearTimeout(currentTargetTimeout);
+    const old = arena.querySelector('.target');
+    if (old) old.remove();
+
+    if (score > best){
+      best = score;
+      localStorage.setItem('reaction_best', best);
+      bestEl.textContent = best;
+    }
+    overlayTitle.textContent = 'Время вышло!';
+    overlaySub.textContent = 'Счёт: ' + score + ' · Рекорд: ' + best;
+    startBtn.textContent = 'Ещё раз';
+    overlay.classList.remove('hidden');
+  }
+
+  startBtn.addEventListener('click', startGame);
+})();
+</script>
+</body>
+</html>
